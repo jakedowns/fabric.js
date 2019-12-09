@@ -74,6 +74,7 @@ fabric.SHARED_ATTRIBUTES = [
  */
 fabric.DPI = 96;
 fabric.reNum = '(?:[-+]?(?:\\d+|\\d*\\.\\d+)(?:[eE][-+]?\\d+)?)';
+fabric.rePathCommand = /([-+]?((\d+\.\d+)|((\d+)|(\.\d+)))(?:[eE][-+]?\d+)?)/ig;
 fabric.fontPaths = { };
 fabric.iMatrix = [1, 0, 0, 1, 0, 0];
 
@@ -2751,29 +2752,13 @@ fabric.CommonMethods = {
  * Wrapper around `console.log` (when available)
  * @param {*} [values] Values to log
  */
-fabric.log = function() { };
+fabric.log = console.log;
 
 /**
  * Wrapper around `console.warn` (when available)
  * @param {*} [values] Values to log as a warning
  */
-fabric.warn = function() { };
-
-/* eslint-disable */
-if (typeof console !== 'undefined') {
-
-  ['log', 'warn'].forEach(function(methodName) {
-
-    if (typeof console[methodName] !== 'undefined' &&
-        typeof console[methodName].apply === 'function') {
-
-      fabric[methodName] = function() {
-        return console[methodName].apply(console, arguments);
-      };
-    }
-  });
-}
-/* eslint-enable */
+fabric.warn = console.warn;
 
 
 (function() {
@@ -3383,7 +3368,9 @@ if (typeof console !== 'undefined') {
       colorAttributes = {
         stroke: 'strokeOpacity',
         fill:   'fillOpacity'
-      };
+      },
+
+      fSize = 'font-size', cPath = 'clip-path';
 
   fabric.svgValidTagNamesRegEx = getSvgRegex(svgValidTagNames);
   fabric.svgViewBoxElementsRegEx = getSvgRegex(svgViewBoxElements);
@@ -4175,13 +4162,21 @@ if (typeof console !== 'undefined') {
       }, { });
       // add values parsed from style, which take precedence over attributes
       // (see: http://www.w3.org/TR/SVG/styling.html#UsingPresentationAttributes)
-      ownAttributes = extend(ownAttributes,
-        extend(getGlobalStylesForElement(element, svgUid), fabric.parseStyleAttribute(element)));
-
+      var cssAttrs = extend(
+        getGlobalStylesForElement(element, svgUid),
+        fabric.parseStyleAttribute(element)
+      );
+      ownAttributes = extend(
+        ownAttributes,
+        cssAttrs
+      );
+      if (cssAttrs[cPath]) {
+        element.setAttribute(cPath, cssAttrs[cPath]);
+      }
       fontSize = parentFontSize = parentAttributes.fontSize || fabric.Text.DEFAULT_SVG_FONT_SIZE;
-      if (ownAttributes['font-size']) {
+      if (ownAttributes[fSize]) {
         // looks like the minimum should be 9px when dealing with ems. this is what looks like in browsers.
-        ownAttributes['font-size'] = fontSize = parseUnit(ownAttributes['font-size'], parentFontSize);
+        ownAttributes[fSize] = fontSize = parseUnit(ownAttributes[fSize], parentFontSize);
       }
 
       var normalizedAttr, normalizedValue, normalizedStyle = {};
@@ -4397,7 +4392,7 @@ if (typeof console !== 'undefined') {
 })(typeof exports !== 'undefined' ? exports : this);
 
 
-fabric.ElementsParser = function(elements, callback, options, reviver, parsingOptions) {
+fabric.ElementsParser = function(elements, callback, options, reviver, parsingOptions, doc) {
   this.elements = elements;
   this.callback = callback;
   this.options = options;
@@ -4405,6 +4400,7 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
   this.svgUid = (options && options.svgUid) || 0;
   this.parsingOptions = parsingOptions;
   this.regexUrl = /^url\(['"]?#([^'"]+)['"]?\)/g;
+  this.doc = doc;
 };
 
 (function(proto) {
@@ -4451,7 +4447,7 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
         _options = obj.parsePreserveAspectRatioAttribute(el);
       }
       obj._removeTransformMatrix(_options);
-      _this.resolveClipPath(obj);
+      _this.resolveClipPath(obj, el);
       _this.reviver && _this.reviver(el, obj);
       _this.instances[index] = obj;
       _this.checkIfDone();
@@ -4459,12 +4455,13 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
   };
 
   proto.extractPropertyDefinition = function(obj, property, storage) {
-    var value = obj[property];
-    if (!(/^url\(/).test(value)) {
+    var value = obj[property], regex = this.regexUrl;
+    if (!regex.test(value)) {
       return;
     }
-    var id = this.regexUrl.exec(value)[1];
-    this.regexUrl.lastIndex = 0;
+    regex.lastIndex = 0;
+    var id = regex.exec(value)[1];
+    regex.lastIndex = 0;
     return fabric[storage][this.svgUid][id];
   };
 
@@ -4485,12 +4482,19 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
     };
   };
 
-  proto.resolveClipPath = function(obj) {
+  proto.resolveClipPath = function(obj, usingElement) {
     var clipPath = this.extractPropertyDefinition(obj, 'clipPath', 'clipPaths'),
         element, klass, objTransformInv, container, gTransform, options;
     if (clipPath) {
       container = [];
       objTransformInv = fabric.util.invertTransform(obj.calcTransformMatrix());
+      // move the clipPath tag as sibling to the real element that is using it
+      var clipPathTag = clipPath[0].parentNode;
+      var clipPathOwner = usingElement;
+      while (clipPathOwner.parentNode && clipPathOwner.getAttribute('clip-path') !== obj.clipPath) {
+        clipPathOwner = clipPathOwner.parentNode;
+      }
+      clipPathOwner.parentNode.appendChild(clipPathTag);
       for (var i = 0; i < clipPath.length; i++) {
         element = clipPath[i];
         klass = this.findTag(element);
@@ -4511,7 +4515,7 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
         clipPath.calcTransformMatrix()
       );
       if (clipPath.clipPath) {
-        this.resolveClipPath(clipPath);
+        this.resolveClipPath(clipPath, clipPathOwner);
       }
       var options = fabric.util.qrDecompose(gTransform);
       clipPath.flipX = false;
@@ -9386,6 +9390,10 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       this._initStatic(el, options);
       this._initInteractive();
       this._createCacheCanvas();
+      this._hoveredTargets = {};
+      this._hoveredTargetsOrdered = [];
+      this._draggedoverTargets = {};
+      this._draggedoverTargetsOrdered = [];
     },
 
     /**
@@ -10798,8 +10806,21 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         this.fire('selection:cleared', { target: obj });
         obj.fire('deselected');
       }
-      if (this._hoveredTarget === obj) {
-        this._hoveredTarget = null;
+      if (this._hoveredTargets[obj.__guid]) {
+        var hoveredOrderedIndex = this._hoveredTargetsOrdered.indexOf(obj.__guid);
+        if (hoveredOrderedIndex > -1) {
+          this._hoveredTargetsOrdered.splice(hoveredOrderedIndex, 1);
+        }
+        this._hoveredTargets[obj.__guid] = null;
+        delete this._hoveredTargets[obj.__guid];
+      }
+      if (this._draggedoverTargets[obj.__guid]) {
+        var draggedoverOrderedIndex = this._draggedoverTargetsOrdered.indexOf(obj.__guid);
+        if (draggedoverOrderedIndex > -1) {
+          this._draggedoverTargetsOrdered.splice(draggedoverOrderedIndex, 1);
+        }
+        this._draggedoverTargets[obj.__guid] = null;
+        delete this._draggedoverTargets[obj.__guid];
       }
       this.callSuper('_onObjectRemoved', obj);
     },
@@ -11215,7 +11236,6 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     _onMouseOut: function(e) {
       var target = this._hoveredTarget;
       this.fire('mouse:out', { target: target, e: e });
-      this._hoveredTarget = null;
       target && target.fire('mouseout', { e: e });
       if (this._iTextInstances) {
         this._iTextInstances.forEach(function(obj) {
@@ -11223,6 +11243,13 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
             obj.hiddenTextarea.focus();
           }
         });
+      }
+      var hoveredOrderedIndex = this._hoveredTargetsOrdered.indexOf(target ? target.__guid : null);
+      if (hoveredOrderedIndex > -1) {
+        // de-ref to prevent memory leaks
+        this._hoveredTargetsOrdered.splice(hoveredOrderedIndex,1);
+        this._hoveredTargets[target ? target.__guid : null] = null;
+        delete this._hoveredTargets[target ? target.__guid : null];
       }
     },
 
@@ -11239,7 +11266,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       // side effects we added to it.
       if (!this.currentTransform && !this.findTarget(e)) {
         this.fire('mouse:over', { target: null, e: e });
-        this._hoveredTarget = null;
+        this._hoveredTargets = {};
+        this._hoveredTargetsOrdered = [];
       }
     },
 
@@ -11278,7 +11306,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     _onDragOver: function(e) {
       e.preventDefault();
       var target = this._simpleEventHandler('dragover', e);
-      this._fireEnterLeaveEvents(target, e);
+      this._fireEnterLeaveEvents([target].concat(this.targets), e);
     },
 
     /**
@@ -11824,7 +11852,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     __onMouseMove: function (e) {
       this._handleEvent(e, 'move:before');
       this._cacheTransformEventData(e);
-      var target, pointer;
+      var target, pointer, _this = this;
 
       if (this.isDrawingMode) {
         this._onMouseMoveInDrawingMode(e);
@@ -11848,8 +11876,16 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       }
       else if (!this._currentTransform) {
         target = this.findTarget(e) || null;
+
+        // console.log(target, this.targets);
+
         this._setCursorFromEvent(e, target);
-        this._fireOverOutEvents(target, e);
+        this._fireOverOutEvents([target].concat(this.targets), e);
+
+        // hoverCursor should come from top-most subtarget
+        this.targets.slice(0).reverse().map(function(subTarget){
+          _this._setCursorFromEvent(e, subTarget);
+        });
       }
       else {
         this._transformObject(e);
@@ -11860,13 +11896,14 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
     /**
      * Manage the mouseout, mouseover events for the fabric object on the canvas
-     * @param {Fabric.Object} target the target where the target from the mousemove event
+     * @param {Array} [fabric.Object] target Array of targets from the mousemove event
      * @param {Event} e Event object fired on mousemove
+     * @param {String} targetName property on the canvas where the target is stored
      * @private
      */
-    _fireOverOutEvents: function(target, e) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: '_hoveredTarget',
+    _fireOverOutEvents: function(targets, e) {
+      this.fireSyntheticInOutEvents(targets, e, {
+        targetName: '_hoveredTargets',
         canvasEvtOut: 'mouse:out',
         evtOut: 'mouseout',
         canvasEvtIn: 'mouse:over',
@@ -11880,9 +11917,9 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @param {Event} e Event object fired on ondrag
      * @private
      */
-    _fireEnterLeaveEvents: function(target, e) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: '_draggedoverTarget',
+    _fireEnterLeaveEvents: function(targets, e) {
+      this.fireSyntheticInOutEvents(targets, e, {
+        targetName: '_draggedoverTargets',
         evtOut: 'dragleave',
         evtIn: 'dragenter',
       });
@@ -11890,7 +11927,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
     /**
      * Manage the synthetic in/out events for the fabric objects on the canvas
-     * @param {Fabric.Object} target the target where the target from the supported events
+     * @param {Array} targets [fabric.Object] targets from the supported events
      * @param {Event} e Event object fired
      * @param {Object} config configuration for the function to work
      * @param {String} config.targetName property on the canvas where the old target is stored
@@ -11900,23 +11937,71 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @param {String} config.evtIn name of the event to fire for in
      * @private
      */
-    fireSyntheticInOutEvents: function(target, e, config) {
-      var inOpt, outOpt, oldTarget = this[config.targetName], outFires, inFires,
-          targetChanged = oldTarget !== target, canvasEvtIn = config.canvasEvtIn, canvasEvtOut = config.canvasEvtOut;
-      if (targetChanged) {
-        inOpt = { e: e, target: target, previousTarget: oldTarget };
-        outOpt = { e: e, target: oldTarget, nextTarget: target };
-        this[config.targetName] = target;
+    fireSyntheticInOutEvents: function(targets, e, config) {
+      targets = targets || [];
+      var _this = this,
+          targetsKeyed = {},
+          targetGuidsOrdered = [],
+          oldTargets = this[config.targetName],
+          oldTargetsOrdered = this[config.targetName + 'Ordered'],
+          outFires,
+          inFires,
+          targetsChanged,
+          canvasEvtIn = config.canvasEvtIn,
+          canvasEvtOut = config.canvasEvtOut;
+
+      // array => object conversion for comparison
+      targets && targets.map(function(target){
+        if (target) {
+          targetsKeyed[target.__guid] = target;
+        }
+        if (target) {
+          targetGuidsOrdered.push(target.__guid);
+        };
+      });
+
+      var string1 = JSON.stringify(Object.keys(oldTargets));
+      var string2 = JSON.stringify(Object.keys(targetsKeyed));
+      targetsChanged = string1 !== string2;
+
+      if (targetsChanged) {
+        this[config.targetName] = targetsKeyed;
+        this[config.targetName + 'Ordered'] = targetGuidsOrdered;
       }
-      inFires = target && targetChanged;
-      outFires = oldTarget && targetChanged;
+
+      inFires = targets.length && targetsChanged;
+      outFires = Object.keys(oldTargets).length && targetsChanged;
+
       if (outFires) {
-        canvasEvtOut && this.fire(canvasEvtOut, outOpt);
-        oldTarget.fire(config.evtOut, outOpt);
+        oldTargetsOrdered.map(function(uuid){
+          var oldTarget = oldTargets[uuid];
+          if (!oldTarget){
+            return;
+          }
+          var outOpt = {
+            e: e,
+            target: oldTarget,
+            previousTargets: oldTargets,
+            previousTargetsOrdered: oldTargetsOrdered
+          };
+          canvasEvtOut && _this.fire(canvasEvtOut, outOpt);
+          oldTarget.fire(config.evtOut, outOpt);
+        });
       }
       if (inFires) {
-        canvasEvtIn && this.fire(canvasEvtIn, inOpt);
-        target.fire(config.evtIn, inOpt);
+        targets.map(function(target){
+          if (!target){
+            return;
+          }
+          var inOpt = {
+            e: e,
+            target: target,
+            previousTargets: oldTargets,
+            previousTargetsOrdered: oldTargetsOrdered
+          };
+          canvasEvtIn && _this.fire(canvasEvtIn, inOpt);
+          target.fire(config.evtIn, inOpt);
+        });
       }
     },
 
@@ -12189,15 +12274,22 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
           currentActiveObjects = activeSelection._objects.slice(0);
       if (activeSelection.contains(target)) {
         activeSelection.removeWithUpdate(target);
-        this._hoveredTarget = target;
+        this._hoveredTargets = {};
+        this._hoveredTargets[activeSelection.__guid] = activeSelection;
+        this._hoveredTargetsOrdered = [activeSelection.__guid];
         if (activeSelection.size() === 1) {
           // activate last remaining object
           this._setActiveObject(activeSelection.item(0), e);
+          this._hoveredTargets = {};
+          this._hoveredTargets[target.__guid] = target;
+          this._hoveredTargetsOrdered = [target.__guid];
         }
       }
       else {
         activeSelection.addWithUpdate(target);
-        this._hoveredTarget = activeSelection;
+        this._hoveredTargets = {};
+        this._hoveredTargets[activeSelection.__guid] = activeSelection;
+        this._hoveredTargetsOrdered = [activeSelection.__guid];
       }
       this._fireSelectionEvents(currentActiveObjects, e);
     },
@@ -12207,7 +12299,9 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      */
     _createActiveSelection: function(target, e) {
       var currentActives = this.getActiveObjects(), group = this._createGroup(target);
-      this._hoveredTarget = group;
+      this._hoveredTargets = {};
+      this._hoveredTargets[group.__guid] = group;
+      this._hoveredTargetsOrdered = [group.__guid];
       this._setActiveObject(group, e);
       this._fireSelectionEvents(currentActives, e);
     },
@@ -14027,7 +14121,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * @param {Function} alternative function to call if browser does not support lineDash
      */
     _setLineDash: function(ctx, dashArray, alternative) {
-      if (!dashArray) {
+      if (!dashArray || dashArray.length === 0) {
         return;
       }
       // Spec requires the concatenation of two copies the dash list when the number of elements is odd
@@ -14774,6 +14868,25 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
    * @type Number
    */
   fabric.Object.__uid = 0;
+
+  /**
+   * A GUID for tracking hovered targets and sub targets
+   * simply tracking via subTargets[index] is not reliable
+   */
+  function generateGUID() {
+    // https://stackoverflow.com/questions/8012002/create-a-unique-number-with-javascript-time
+    return new Date().valueOf().toString(36) + Math.random().toString(36).substr(2);
+    // return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    //   var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    //   return v.toString(16);
+    // });
+  }
+  fabric.Object.prototype.__defineGetter__('__guid', function(){
+    if (!this.__myGUID) {
+      this.__myGUID = generateGUID();
+    }
+    return this.__myGUID;
+  });
 
 })(typeof exports !== 'undefined' ? exports : this);
 
@@ -18703,7 +18816,7 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
           coords = [],
           currentPath,
           parsed,
-          re = /([-+]?((\d+\.\d+)|((\d+)|(\.\d+)))(?:e[-+]?\d+)?)/ig,
+          re = fabric.rePathCommand,
           match,
           coordsStr;
 
@@ -27982,15 +28095,25 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
   },
 
   /**
+   * Default handler for double click, select a word
+   */
+  doubleClickHandler: function(options) {
+    this.selectWord(this.getSelectionStartFromPointer(options.e));
+  },
+
+  /**
+   * Default handler for triple click, select a line
+   */
+  tripleClickHandler: function(options) {
+    this.selectLine(this.getSelectionStartFromPointer(options.e));
+  },
+
+  /**
    * Initializes double and triple click event handlers
    */
   initClicks: function() {
-    this.on('mousedblclick', function(options) {
-      this.selectWord(this.getSelectionStartFromPointer(options.e));
-    });
-    this.on('tripleclick', function(options) {
-      this.selectLine(this.getSelectionStartFromPointer(options.e));
-    });
+    this.on('mousedblclick', this.doubleClickHandler);
+    this.on('tripleclick', this.tripleClickHandler);
   },
 
   /**
@@ -28028,9 +28151,9 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     if (!this.canvas || !this.editable || (options.e.button && options.e.button !== 1)) {
       return;
     }
-    if (this === this.canvas._activeObject) {
-      this.selected = true;
-    }
+    // we want to avoid that an object that was selected and then becomes unselectable,
+    // may trigger editing mode in some way.
+    this.selected = this === this.canvas._activeObject;
   },
 
   /**
