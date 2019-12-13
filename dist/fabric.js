@@ -9390,10 +9390,6 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       this._initStatic(el, options);
       this._initInteractive();
       this._createCacheCanvas();
-      this._hoveredTargets = {};
-      this._hoveredTargetsOrdered = [];
-      this._draggedoverTargets = {};
-      this._draggedoverTargetsOrdered = [];
     },
 
     /**
@@ -10806,21 +10802,21 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         this.fire('selection:cleared', { target: obj });
         obj.fire('deselected');
       }
-      if (this._hoveredTargets[obj.__guid]) {
-        var hoveredOrderedIndex = this._hoveredTargetsOrdered.indexOf(obj.__guid);
-        if (hoveredOrderedIndex > -1) {
-          this._hoveredTargetsOrdered.splice(hoveredOrderedIndex, 1);
+      // TODO: need a way to cleanly check if obj is one of _hoveredTargetN and de-ref it
+      // if (obj === this._hoveredTarget){
+      //   this._hoveredTarget = null;
+      // }
+      // is there a more sane way than looping through ALL properties of *this* ?
+      // i wanted to put them into a ._hoveredTargets[Array]
+      // but, that complicates the logic of fireSyntheticInOutEvents
+      var keys = Object.keys(this);
+      for (var i = 0; i < keys.length; i++){
+        var key = keys[i];
+        if (key.indexOf('_hoveredTarget') > -1){
+          if (obj === this[key]){
+            this[key] = null;
+          }
         }
-        this._hoveredTargets[obj.__guid] = null;
-        delete this._hoveredTargets[obj.__guid];
-      }
-      if (this._draggedoverTargets[obj.__guid]) {
-        var draggedoverOrderedIndex = this._draggedoverTargetsOrdered.indexOf(obj.__guid);
-        if (draggedoverOrderedIndex > -1) {
-          this._draggedoverTargetsOrdered.splice(draggedoverOrderedIndex, 1);
-        }
-        this._draggedoverTargets[obj.__guid] = null;
-        delete this._draggedoverTargets[obj.__guid];
       }
       this.callSuper('_onObjectRemoved', obj);
     },
@@ -11234,22 +11230,32 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @param {Event} e Event object fired on mousedown
      */
     _onMouseOut: function(e) {
+      console.log('_onMouseOut',e);
+
+      // pre-ISSUE-4115
       var target = this._hoveredTarget;
       this.fire('mouse:out', { target: target, e: e });
       target && target.fire('mouseout', { e: e });
+
+      // post-ISSUE-4115
+      // should we really be firing mouseOut on ALL _hoveredTargets?
+      // maybe just the top-level one? I dunno...
+      var keys = Object.keys(this);
+      for (var i = 0; i < keys.length; i++){
+        var key = keys[i];
+        if (key.indexOf('_hoveredTarget') > -1){
+          var target = this[key];
+          this.fire('mouse:out', { target: target, e: e });
+          target && target.fire('mouseout', { e: e });
+        }
+      }
+
       if (this._iTextInstances) {
         this._iTextInstances.forEach(function(obj) {
           if (obj.isEditing) {
             obj.hiddenTextarea.focus();
           }
         });
-      }
-      var hoveredOrderedIndex = this._hoveredTargetsOrdered.indexOf(target ? target.__guid : null);
-      if (hoveredOrderedIndex > -1) {
-        // de-ref to prevent memory leaks
-        this._hoveredTargetsOrdered.splice(hoveredOrderedIndex,1);
-        this._hoveredTargets[target ? target.__guid : null] = null;
-        delete this._hoveredTargets[target ? target.__guid : null];
       }
     },
 
@@ -11266,8 +11272,16 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       // side effects we added to it.
       if (!this.currentTransform && !this.findTarget(e)) {
         this.fire('mouse:over', { target: null, e: e });
-        this._hoveredTargets = {};
-        this._hoveredTargetsOrdered = [];
+        // PRE-ISSUE-4115
+        // this._hoveredTarget = null;
+        // POST-ISSUE-4115
+        var keys = Object.keys(this);
+        for (var i = 0; i < keys.length; i++){
+          var key = keys[i];
+          if (key.indexOf('_hoveredTarget') > -1){
+            this[key] = null;
+          }
+        }
       }
     },
 
@@ -11876,12 +11890,12 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       }
       else if (!this._currentTransform) {
         target = this.findTarget(e) || null;
-
-        // console.log(target, this.targets);
-
         this._setCursorFromEvent(e, target);
-        this._fireOverOutEvents([target].concat(this.targets), e);
-
+        this._fireOverOutEvents(target, e);
+        // handle triggering on SubTargets
+        this.targets.map(function(subTarget,k){
+          _this._fireOverOutEvents(subTarget, e, '_hoveredTarget' + k);
+        });
         // hoverCursor should come from top-most subtarget
         this.targets.slice(0).reverse().map(function(subTarget){
           _this._setCursorFromEvent(e, subTarget);
@@ -11896,14 +11910,13 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
     /**
      * Manage the mouseout, mouseover events for the fabric object on the canvas
-     * @param {Array} [fabric.Object] target Array of targets from the mousemove event
      * @param {Event} e Event object fired on mousemove
      * @param {String} targetName property on the canvas where the target is stored
      * @private
      */
-    _fireOverOutEvents: function(targets, e) {
-      this.fireSyntheticInOutEvents(targets, e, {
-        targetName: '_hoveredTargets',
+    _fireOverOutEvents: function(target, e, targetName) {
+      this.fireSyntheticInOutEvents(target, e, {
+        targetName: targetName || '_hoveredTarget',
         canvasEvtOut: 'mouse:out',
         evtOut: 'mouseout',
         canvasEvtIn: 'mouse:over',
@@ -11917,9 +11930,9 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @param {Event} e Event object fired on ondrag
      * @private
      */
-    _fireEnterLeaveEvents: function(targets, e) {
-      this.fireSyntheticInOutEvents(targets, e, {
-        targetName: '_draggedoverTargets',
+    _fireEnterLeaveEvents: function(target, e) {
+      this.fireSyntheticInOutEvents(target, e, {
+        targetName: '_draggedoverTarget',
         evtOut: 'dragleave',
         evtIn: 'dragenter',
       });
@@ -11927,7 +11940,6 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
     /**
      * Manage the synthetic in/out events for the fabric objects on the canvas
-     * @param {Array} targets [fabric.Object] targets from the supported events
      * @param {Event} e Event object fired
      * @param {Object} config configuration for the function to work
      * @param {String} config.targetName property on the canvas where the old target is stored
@@ -11937,71 +11949,22 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @param {String} config.evtIn name of the event to fire for in
      * @private
      */
-    fireSyntheticInOutEvents: function(targets, e, config) {
-      targets = targets || [];
-      var _this = this,
-          targetsKeyed = {},
-          targetGuidsOrdered = [],
-          oldTargets = this[config.targetName],
-          oldTargetsOrdered = this[config.targetName + 'Ordered'],
-          outFires,
-          inFires,
-          targetsChanged,
-          canvasEvtIn = config.canvasEvtIn,
-          canvasEvtOut = config.canvasEvtOut;
-
-      // array => object conversion for comparison
-      targets && targets.map(function(target){
-        if (target) {
-          targetsKeyed[target.__guid] = target;
-        }
-        if (target) {
-          targetGuidsOrdered.push(target.__guid);
-        };
-      });
-
-      var string1 = JSON.stringify(Object.keys(oldTargets));
-      var string2 = JSON.stringify(Object.keys(targetsKeyed));
-      targetsChanged = string1 !== string2;
-
-      if (targetsChanged) {
-        this[config.targetName] = targetsKeyed;
-        this[config.targetName + 'Ordered'] = targetGuidsOrdered;
+    fireSyntheticInOutEvents: function(target, e, config) {
+      var inOpt, outOpt, oldTarget = this[config.targetName], outFires, inFires,
+          targetChanged = oldTarget !== target, canvasEvtIn = config.canvasEvtIn, canvasEvtOut = config.canvasEvtOut;
+      if (targetChanged) {
+        inOpt = {e: e, target: target, previousTarget: oldTarget};
+        outOpt = {e: e, target: oldTarget, nextTarget: target};
+        this[config.targetName] = target;
+        console.log(config.targetName, target); //
       }
-
-      inFires = targets.length && targetsChanged;
-      outFires = Object.keys(oldTargets).length && targetsChanged;
-
       if (outFires) {
-        oldTargetsOrdered.map(function(uuid){
-          var oldTarget = oldTargets[uuid];
-          if (!oldTarget){
-            return;
-          }
-          var outOpt = {
-            e: e,
-            target: oldTarget,
-            previousTargets: oldTargets,
-            previousTargetsOrdered: oldTargetsOrdered
-          };
-          canvasEvtOut && _this.fire(canvasEvtOut, outOpt);
-          oldTarget.fire(config.evtOut, outOpt);
-        });
+        canvasEvtOut && this.fire(canvasEvtOut, outOpt);
+        oldTarget.fire(config.evtOut, outOpt);
       }
       if (inFires) {
-        targets.map(function(target){
-          if (!target){
-            return;
-          }
-          var inOpt = {
-            e: e,
-            target: target,
-            previousTargets: oldTargets,
-            previousTargetsOrdered: oldTargetsOrdered
-          };
-          canvasEvtIn && _this.fire(canvasEvtIn, inOpt);
-          target.fire(config.evtIn, inOpt);
-        });
+        canvasEvtIn && this.fire(canvasEvtIn, inOpt);
+        target.fire(config.evtIn, inOpt);
       }
     },
 
@@ -12274,22 +12237,38 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
           currentActiveObjects = activeSelection._objects.slice(0);
       if (activeSelection.contains(target)) {
         activeSelection.removeWithUpdate(target);
-        this._hoveredTargets = {};
-        this._hoveredTargets[activeSelection.__guid] = activeSelection;
-        this._hoveredTargetsOrdered = [activeSelection.__guid];
+        this._hoveredTarget = target;
+        // ISSUE-4115: clear out any additional hovered targets that were set?
+        // should we fire mouse:out on those?
+        var keys = Object.keys(this);
+        for (var i = 0; i < keys.length; i++){
+          var key = keys[i];
+          if (key.indexOf('_hoveredTarget') > -1){
+            this[key] = null;
+          }
+        }
+        // ISSUE-4115: loop through this.targets and assign them as hovered as well?
+        // why don't we fire mouse:over here?
+        for (var i = 0; i < this.targets.length; i++){
+          this['_hoveredTarget' + i] = this.targets[i];
+        }
         if (activeSelection.size() === 1) {
           // activate last remaining object
           this._setActiveObject(activeSelection.item(0), e);
-          this._hoveredTargets = {};
-          this._hoveredTargets[target.__guid] = target;
-          this._hoveredTargetsOrdered = [target.__guid];
         }
       }
       else {
         activeSelection.addWithUpdate(target);
-        this._hoveredTargets = {};
-        this._hoveredTargets[activeSelection.__guid] = activeSelection;
-        this._hoveredTargetsOrdered = [activeSelection.__guid];
+        this._hoveredTarget = activeSelection;
+        // ISSUE-4115: clear out any additional hovered targets that were set?
+        // should we fire mouse:out on those?
+        var keys = Object.keys(this);
+        for (var i = 0; i < keys.length; i++){
+          var key = keys[i];
+          if (key.indexOf('_hoveredTarget') > -1){
+            this[key] = null;
+          }
+        }
       }
       this._fireSelectionEvents(currentActiveObjects, e);
     },
@@ -12299,9 +12278,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      */
     _createActiveSelection: function(target, e) {
       var currentActives = this.getActiveObjects(), group = this._createGroup(target);
-      this._hoveredTargets = {};
-      this._hoveredTargets[group.__guid] = group;
-      this._hoveredTargetsOrdered = [group.__guid];
+      this._hoveredTarget = group;
+      // ISSUE 4115: should we consider subTargets here?
       this._setActiveObject(group, e);
       this._fireSelectionEvents(currentActives, e);
     },
