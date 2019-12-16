@@ -331,6 +331,26 @@
     fireMiddleClick: false,
 
     /**
+     * Keep track of the subTargets for Mouse Events
+     * @type fabric.Object[]
+     */
+    targets: [],
+
+    /**
+     * Keep track of the hovered target
+     * @type fabric.Object
+     * @private
+     */
+    _hoveredTarget: null,
+
+    /**
+     * hold the list of nested targets hovered
+     * @type fabric.Object[]
+     * @private
+     */
+    _hoveredTargets: [],
+
+    /**
      * @private
      */
     _initInteractive: function() {
@@ -1477,21 +1497,9 @@
         this.fire('selection:cleared', { target: obj });
         obj.fire('deselected');
       }
-      // TODO: need a way to cleanly check if obj is one of _hoveredTargetN and de-ref it
-      // if (obj === this._hoveredTarget){
-      //   this._hoveredTarget = null;
-      // }
-      // is there a more sane way than looping through ALL properties of *this* ?
-      // i wanted to put them into a ._hoveredTargets[Array]
-      // but, that complicates the logic of fireSyntheticInOutEvents
-      var keys = Object.keys(this);
-      for (var i = 0; i < keys.length; i++){
-        var key = keys[i];
-        if (key.indexOf('_hoveredTarget') > -1){
-          if (obj === this[key]){
-            this[key] = null;
-          }
-        }
+      if (obj === this._hoveredTarget){
+        this._hoveredTarget = null;
+        this._hoveredTargets = [];
       }
       this.callSuper('_onObjectRemoved', obj);
     },

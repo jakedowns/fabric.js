@@ -168,23 +168,17 @@
     _onMouseOut: function(e) {
       console.log('_onMouseOut',e);
 
-      // pre-ISSUE-4115
       var target = this._hoveredTarget;
       this.fire('mouse:out', { target: target, e: e });
+      this._hoveredTarget = null;
       target && target.fire('mouseout', { e: e });
 
-      // post-ISSUE-4115
-      // should we really be firing mouseOut on ALL _hoveredTargets?
-      // maybe just the top-level one? I dunno...
-      var keys = Object.keys(this);
-      for (var i = 0; i < keys.length; i++){
-        var key = keys[i];
-        if (key.indexOf('_hoveredTarget') > -1){
-          var target = this[key];
-          this.fire('mouse:out', { target: target, e: e });
-          target && target.fire('mouseout', { e: e });
-        }
-      }
+      var _this = this;
+      this._hoveredTargets.forEach(function(_target){
+        _this.fire('mouse:out', { target: target, e: e });
+        _target && target.fire('mouseout', { e: e });
+      });
+      this._hoveredTargets = [];
 
       if (this._iTextInstances) {
         this._iTextInstances.forEach(function(obj) {
@@ -208,16 +202,8 @@
       // side effects we added to it.
       if (!this.currentTransform && !this.findTarget(e)) {
         this.fire('mouse:over', { target: null, e: e });
-        // PRE-ISSUE-4115
-        // this._hoveredTarget = null;
-        // POST-ISSUE-4115
-        var keys = Object.keys(this);
-        for (var i = 0; i < keys.length; i++){
-          var key = keys[i];
-          if (key.indexOf('_hoveredTarget') > -1){
-            this[key] = null;
-          }
-        }
+        this._hoveredTarget = null;
+        this._hoveredTargets = [];
       }
     },
 
@@ -256,7 +242,7 @@
     _onDragOver: function(e) {
       e.preventDefault();
       var target = this._simpleEventHandler('dragover', e);
-      this._fireEnterLeaveEvents([target].concat(this.targets), e);
+      this._fireEnterLeaveEvents(target, e);
     },
 
     /**
@@ -802,7 +788,7 @@
     __onMouseMove: function (e) {
       this._handleEvent(e, 'move:before');
       this._cacheTransformEventData(e);
-      var target, pointer, _this = this;
+      var target, pointer;
 
       if (this.isDrawingMode) {
         this._onMouseMoveInDrawingMode(e);
@@ -828,14 +814,6 @@
         target = this.findTarget(e) || null;
         this._setCursorFromEvent(e, target);
         this._fireOverOutEvents(target, e);
-        // handle triggering on SubTargets
-        this.targets.map(function(subTarget,k){
-          _this._fireOverOutEvents(subTarget, e, '_hoveredTarget' + k);
-        });
-        // hoverCursor should come from top-most subtarget
-        this.targets.slice(0).reverse().map(function(subTarget){
-          _this._setCursorFromEvent(e, subTarget);
-        });
       }
       else {
         this._transformObject(e);
@@ -846,18 +824,25 @@
 
     /**
      * Manage the mouseout, mouseover events for the fabric object on the canvas
+     * @param {Fabric.Object} target the target where the target from the mousemove event
      * @param {Event} e Event object fired on mousemove
-     * @param {String} targetName property on the canvas where the target is stored
      * @private
      */
-    _fireOverOutEvents: function(target, e, targetName) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: targetName || '_hoveredTarget',
-        canvasEvtOut: 'mouse:out',
-        evtOut: 'mouseout',
-        canvasEvtIn: 'mouse:over',
-        evtIn: 'mouseover',
+    _fireOverOutEvents: function(target, e) {
+      var _this = this, _hoveredTarget = this._hoveredTarget,
+          _hoveredTargets = this._hoveredTargets, targets = this.targets,
+          diff = _hoveredTargets.length - targets.length;
+      [target].concat(targets, new Array(diff > 0 ? diff : 0)).forEach(function(_target, index) {
+        _this.fireSyntheticInOutEvents(_target, e, {
+          oldTarget: index === 0 ? _hoveredTarget : _hoveredTargets[index - 1],
+          canvasEvtOut: 'mouse:out',
+          evtOut: 'mouseout',
+          canvasEvtIn: 'mouse:over',
+          evtIn: 'mouseover',
+        });
       });
+      this._hoveredTarget = target;
+      this._hoveredTargets = this.targets.concat();
     },
 
     /**
@@ -867,15 +852,22 @@
      * @private
      */
     _fireEnterLeaveEvents: function(target, e) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: '_draggedoverTarget',
-        evtOut: 'dragleave',
-        evtIn: 'dragenter',
+      var _this = this, _draggedoverTarget = this._draggedoverTarget,
+          _hoveredTargets = this._hoveredTargets, targets = this.targets,
+          diff = _hoveredTargets.length - targets.length;
+      [target].concat(targets, new Array(diff > 0 ? diff : 0)).forEach(function(_target, index) {
+        _this.fireSyntheticInOutEvents(_target, e, {
+          oldTarget: index === 0 ? _draggedoverTarget : _hoveredTargets[index - 1],
+          evtOut: 'dragleave',
+          evtIn: 'dragenter',
+        });
       });
+      this._draggedoverTarget = target;
     },
 
     /**
      * Manage the synthetic in/out events for the fabric objects on the canvas
+     * @param {Fabric.Object} target the target where the target from the supported events
      * @param {Event} e Event object fired
      * @param {Object} config configuration for the function to work
      * @param {String} config.targetName property on the canvas where the old target is stored
@@ -886,14 +878,14 @@
      * @private
      */
     fireSyntheticInOutEvents: function(target, e, config) {
-      var inOpt, outOpt, oldTarget = this[config.targetName], outFires, inFires,
+      var inOpt, outOpt, oldTarget = config.oldTarget, outFires, inFires,
           targetChanged = oldTarget !== target, canvasEvtIn = config.canvasEvtIn, canvasEvtOut = config.canvasEvtOut;
       if (targetChanged) {
-        inOpt = {e: e, target: target, previousTarget: oldTarget};
-        outOpt = {e: e, target: oldTarget, nextTarget: target};
-        this[config.targetName] = target;
-        console.log(config.targetName, target); //
+        inOpt = { e: e, target: target, previousTarget: oldTarget };
+        outOpt = { e: e, target: oldTarget, nextTarget: target };
       }
+      inFires = target && targetChanged;
+      outFires = oldTarget && targetChanged;
       if (outFires) {
         canvasEvtOut && this.fire(canvasEvtOut, outOpt);
         oldTarget.fire(config.evtOut, outOpt);
@@ -1055,6 +1047,13 @@
                     && target._findTargetCorner(this.getPointer(e, true));
 
       if (!corner) {
+        if (target.subTargetCheck){
+          // hoverCursor should come from top-most subTarget,
+          // so we walk the array backwards
+          this.targets.concat().reverse().map(function(_target){
+            hoverCursor = _target.hoverCursor || hoverCursor;
+          });
+        }
         this.setCursor(hoverCursor);
       }
       else {
