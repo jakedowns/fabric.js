@@ -75,8 +75,10 @@ fabric.SHARED_ATTRIBUTES = [
 fabric.DPI = 96;
 fabric.reNum = '(?:[-+]?(?:\\d+|\\d*\\.\\d+)(?:[eE][-+]?\\d+)?)';
 fabric.rePathCommand = /([-+]?((\d+\.\d+)|((\d+)|(\.\d+)))(?:[eE][-+]?\d+)?)/ig;
+fabric.reNonWord = /[ \n\.,;!\?\-]/;
 fabric.fontPaths = { };
 fabric.iMatrix = [1, 0, 0, 1, 0, 0];
+fabric.svgNS = 'http://www.w3.org/2000/svg';
 
 /**
  * Pixel limit for cache canvases. 1Mpx , 4Mpx should be fine.
@@ -3785,14 +3787,14 @@ fabric.warn = console.warn;
           y = el.getAttribute('y') || 0,
           el2 = elementById(doc, xlink).cloneNode(true),
           currentTrans = (el2.getAttribute('transform') || '') + ' translate(' + x + ', ' + y + ')',
-          parentNode, oldLength = nodelist.length, attr, j, attrs, len;
+          parentNode, oldLength = nodelist.length, attr, j, attrs, len, namespace = fabric.svgNS;
 
       applyViewboxTransform(el2);
       if (/^svg$/i.test(el2.nodeName)) {
-        var el3 = el2.ownerDocument.createElement('g');
+        var el3 = el2.ownerDocument.createElementNS(namespace, 'g');
         for (j = 0, attrs = el2.attributes, len = attrs.length; j < len; j++) {
           attr = attrs.item(j);
-          el3.setAttribute(attr.nodeName, attr.nodeValue);
+          el3.setAttributeNS(namespace, attr.nodeName, attr.nodeValue);
         }
         // el2.firstChild != null
         while (el2.firstChild) {
@@ -3937,7 +3939,7 @@ fabric.warn = console.warn;
                   (minY * scaleY + heightDiff) + ') ';
     parsedDim.viewboxTransform = fabric.parseTransformAttribute(matrix);
     if (element.nodeName === 'svg') {
-      el = element.ownerDocument.createElement('g');
+      el = element.ownerDocument.createElementNS(fabric.svgNS, 'g');
       // element.firstChild != null
       while (element.firstChild) {
         el.appendChild(element.firstChild);
@@ -9656,6 +9658,26 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     fireMiddleClick: false,
 
     /**
+     * Keep track of the subTargets for Mouse Events
+     * @type fabric.Object[]
+     */
+    targets: [],
+
+    /**
+     * Keep track of the hovered target
+     * @type fabric.Object
+     * @private
+     */
+    _hoveredTarget: null,
+
+    /**
+     * hold the list of nested targets hovered
+     * @type fabric.Object[]
+     * @private
+     */
+    _hoveredTargets: [],
+
+    /**
      * @private
      */
     _initInteractive: function() {
@@ -10802,21 +10824,9 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         this.fire('selection:cleared', { target: obj });
         obj.fire('deselected');
       }
-      // TODO: need a way to cleanly check if obj is one of _hoveredTargetN and de-ref it
-      // if (obj === this._hoveredTarget){
-      //   this._hoveredTarget = null;
-      // }
-      // is there a more sane way than looping through ALL properties of *this* ?
-      // i wanted to put them into a ._hoveredTargets[Array]
-      // but, that complicates the logic of fireSyntheticInOutEvents
-      var keys = Object.keys(this);
-      for (var i = 0; i < keys.length; i++){
-        var key = keys[i];
-        if (key.indexOf('_hoveredTarget') > -1){
-          if (obj === this[key]){
-            this[key] = null;
-          }
-        }
+      if (obj === this._hoveredTarget){
+        this._hoveredTarget = null;
+        this._hoveredTargets = [];
       }
       this.callSuper('_onObjectRemoved', obj);
     },
@@ -11232,23 +11242,17 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     _onMouseOut: function(e) {
       console.log('_onMouseOut',e);
 
-      // pre-ISSUE-4115
       var target = this._hoveredTarget;
       this.fire('mouse:out', { target: target, e: e });
+      this._hoveredTarget = null;
       target && target.fire('mouseout', { e: e });
 
-      // post-ISSUE-4115
-      // should we really be firing mouseOut on ALL _hoveredTargets?
-      // maybe just the top-level one? I dunno...
-      var keys = Object.keys(this);
-      for (var i = 0; i < keys.length; i++){
-        var key = keys[i];
-        if (key.indexOf('_hoveredTarget') > -1){
-          var target = this[key];
-          this.fire('mouse:out', { target: target, e: e });
-          target && target.fire('mouseout', { e: e });
-        }
-      }
+      var _this = this;
+      this._hoveredTargets.forEach(function(_target){
+        _this.fire('mouse:out', { target: target, e: e });
+        _target && target.fire('mouseout', { e: e });
+      });
+      this._hoveredTargets = [];
 
       if (this._iTextInstances) {
         this._iTextInstances.forEach(function(obj) {
@@ -11272,16 +11276,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       // side effects we added to it.
       if (!this.currentTransform && !this.findTarget(e)) {
         this.fire('mouse:over', { target: null, e: e });
-        // PRE-ISSUE-4115
-        // this._hoveredTarget = null;
-        // POST-ISSUE-4115
-        var keys = Object.keys(this);
-        for (var i = 0; i < keys.length; i++){
-          var key = keys[i];
-          if (key.indexOf('_hoveredTarget') > -1){
-            this[key] = null;
-          }
-        }
+        this._hoveredTarget = null;
+        this._hoveredTargets = [];
       }
     },
 
@@ -11320,7 +11316,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     _onDragOver: function(e) {
       e.preventDefault();
       var target = this._simpleEventHandler('dragover', e);
-      this._fireEnterLeaveEvents([target].concat(this.targets), e);
+      this._fireEnterLeaveEvents(target, e);
     },
 
     /**
@@ -11866,7 +11862,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     __onMouseMove: function (e) {
       this._handleEvent(e, 'move:before');
       this._cacheTransformEventData(e);
-      var target, pointer, _this = this;
+      var target, pointer;
 
       if (this.isDrawingMode) {
         this._onMouseMoveInDrawingMode(e);
@@ -11892,14 +11888,6 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         target = this.findTarget(e) || null;
         this._setCursorFromEvent(e, target);
         this._fireOverOutEvents(target, e);
-        // handle triggering on SubTargets
-        this.targets.map(function(subTarget,k){
-          _this._fireOverOutEvents(subTarget, e, '_hoveredTarget' + k);
-        });
-        // hoverCursor should come from top-most subtarget
-        this.targets.slice(0).reverse().map(function(subTarget){
-          _this._setCursorFromEvent(e, subTarget);
-        });
       }
       else {
         this._transformObject(e);
@@ -11910,18 +11898,25 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
     /**
      * Manage the mouseout, mouseover events for the fabric object on the canvas
+     * @param {Fabric.Object} target the target where the target from the mousemove event
      * @param {Event} e Event object fired on mousemove
-     * @param {String} targetName property on the canvas where the target is stored
      * @private
      */
-    _fireOverOutEvents: function(target, e, targetName) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: targetName || '_hoveredTarget',
-        canvasEvtOut: 'mouse:out',
-        evtOut: 'mouseout',
-        canvasEvtIn: 'mouse:over',
-        evtIn: 'mouseover',
+    _fireOverOutEvents: function(target, e) {
+      var _this = this, _hoveredTarget = this._hoveredTarget,
+          _hoveredTargets = this._hoveredTargets, targets = this.targets,
+          diff = _hoveredTargets.length - targets.length;
+      [target].concat(targets, new Array(diff > 0 ? diff : 0)).forEach(function(_target, index) {
+        _this.fireSyntheticInOutEvents(_target, e, {
+          oldTarget: index === 0 ? _hoveredTarget : _hoveredTargets[index - 1],
+          canvasEvtOut: 'mouse:out',
+          evtOut: 'mouseout',
+          canvasEvtIn: 'mouse:over',
+          evtIn: 'mouseover',
+        });
       });
+      this._hoveredTarget = target;
+      this._hoveredTargets = this.targets.concat();
     },
 
     /**
@@ -11931,15 +11926,22 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @private
      */
     _fireEnterLeaveEvents: function(target, e) {
-      this.fireSyntheticInOutEvents(target, e, {
-        targetName: '_draggedoverTarget',
-        evtOut: 'dragleave',
-        evtIn: 'dragenter',
+      var _this = this, _draggedoverTarget = this._draggedoverTarget,
+          _hoveredTargets = this._hoveredTargets, targets = this.targets,
+          diff = _hoveredTargets.length - targets.length;
+      [target].concat(targets, new Array(diff > 0 ? diff : 0)).forEach(function(_target, index) {
+        _this.fireSyntheticInOutEvents(_target, e, {
+          oldTarget: index === 0 ? _draggedoverTarget : _hoveredTargets[index - 1],
+          evtOut: 'dragleave',
+          evtIn: 'dragenter',
+        });
       });
+      this._draggedoverTarget = target;
     },
 
     /**
      * Manage the synthetic in/out events for the fabric objects on the canvas
+     * @param {Fabric.Object} target the target where the target from the supported events
      * @param {Event} e Event object fired
      * @param {Object} config configuration for the function to work
      * @param {String} config.targetName property on the canvas where the old target is stored
@@ -11950,14 +11952,14 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * @private
      */
     fireSyntheticInOutEvents: function(target, e, config) {
-      var inOpt, outOpt, oldTarget = this[config.targetName], outFires, inFires,
+      var inOpt, outOpt, oldTarget = config.oldTarget, outFires, inFires,
           targetChanged = oldTarget !== target, canvasEvtIn = config.canvasEvtIn, canvasEvtOut = config.canvasEvtOut;
       if (targetChanged) {
-        inOpt = {e: e, target: target, previousTarget: oldTarget};
-        outOpt = {e: e, target: oldTarget, nextTarget: target};
-        this[config.targetName] = target;
-        console.log(config.targetName, target); //
+        inOpt = { e: e, target: target, previousTarget: oldTarget };
+        outOpt = { e: e, target: oldTarget, nextTarget: target };
       }
+      inFires = target && targetChanged;
+      outFires = oldTarget && targetChanged;
       if (outFires) {
         canvasEvtOut && this.fire(canvasEvtOut, outOpt);
         oldTarget.fire(config.evtOut, outOpt);
@@ -12119,6 +12121,13 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
                     && target._findTargetCorner(this.getPointer(e, true));
 
       if (!corner) {
+        if (target.subTargetCheck){
+          // hoverCursor should come from top-most subTarget,
+          // so we walk the array backwards
+          this.targets.concat().reverse().map(function(_target){
+            hoverCursor = _target.hoverCursor || hoverCursor;
+          });
+        }
         this.setCursor(hoverCursor);
       }
       else {
@@ -12238,20 +12247,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       if (activeSelection.contains(target)) {
         activeSelection.removeWithUpdate(target);
         this._hoveredTarget = target;
-        // ISSUE-4115: clear out any additional hovered targets that were set?
-        // should we fire mouse:out on those?
-        var keys = Object.keys(this);
-        for (var i = 0; i < keys.length; i++){
-          var key = keys[i];
-          if (key.indexOf('_hoveredTarget') > -1){
-            this[key] = null;
-          }
-        }
-        // ISSUE-4115: loop through this.targets and assign them as hovered as well?
-        // why don't we fire mouse:over here?
-        for (var i = 0; i < this.targets.length; i++){
-          this['_hoveredTarget' + i] = this.targets[i];
-        }
+        this._hoveredTargets = this.targets.concat();
         if (activeSelection.size() === 1) {
           // activate last remaining object
           this._setActiveObject(activeSelection.item(0), e);
@@ -12260,15 +12256,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       else {
         activeSelection.addWithUpdate(target);
         this._hoveredTarget = activeSelection;
-        // ISSUE-4115: clear out any additional hovered targets that were set?
-        // should we fire mouse:out on those?
-        var keys = Object.keys(this);
-        for (var i = 0; i < keys.length; i++){
-          var key = keys[i];
-          if (key.indexOf('_hoveredTarget') > -1){
-            this[key] = null;
-          }
-        }
+        this._hoveredTargets = this.targets.concat();
       }
       this._fireSelectionEvents(currentActiveObjects, e);
     },
@@ -12280,6 +12268,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       var currentActives = this.getActiveObjects(), group = this._createGroup(target);
       this._hoveredTarget = group;
       // ISSUE 4115: should we consider subTargets here?
+      // this._hoveredTargets = [];
+      // this._hoveredTargets = this.targets.concat();
       this._setActiveObject(group, e);
       this._fireSelectionEvents(currentActives, e);
     },
@@ -14846,26 +14836,6 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
    * @type Number
    */
   fabric.Object.__uid = 0;
-
-  /**
-   * A GUID for tracking hovered targets and sub targets
-   * simply tracking via subTargets[index] is not reliable
-   */
-  function generateGUID() {
-    // https://stackoverflow.com/questions/8012002/create-a-unique-number-with-javascript-time
-    return new Date().valueOf().toString(36) + Math.random().toString(36).substr(2);
-    // return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    //   var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-    //   return v.toString(16);
-    // });
-  }
-  fabric.Object.prototype.__defineGetter__('__guid', function(){
-    if (!this.__myGUID) {
-      this.__myGUID = generateGUID();
-    }
-    return this.__myGUID;
-  });
-
 })(typeof exports !== 'undefined' ? exports : this);
 
 
@@ -27367,15 +27337,17 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
      * @return {Number} Index of the beginning or end of a word
      */
     searchWordBoundary: function(selectionStart, direction) {
-      var index     = this._reSpace.test(this._text[selectionStart]) ? selectionStart - 1 : selectionStart,
-          _char     = this._text[index],
-          reNonWord = /[ \n\.,;!\?\-]/;
+      var text = this._text,
+          index     = this._reSpace.test(text[selectionStart]) ? selectionStart - 1 : selectionStart,
+          _char     = text[index],
+          // wrong
+          reNonWord = fabric.reNonWord;
 
-      while (!reNonWord.test(_char) && index > 0 && index < this._text.length) {
+      while (!reNonWord.test(_char) && index > 0 && index < text.length) {
         index += direction;
-        _char = this._text[index];
+        _char = text[index];
       }
-      if (reNonWord.test(_char) && _char !== '\n') {
+      if (reNonWord.test(_char)) {
         index += direction === 1 ? 0 : 1;
       }
       return index;
@@ -28076,6 +28048,9 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
    * Default handler for double click, select a word
    */
   doubleClickHandler: function(options) {
+    if (!this.isEditing) {
+      return;
+    }
     this.selectWord(this.getSelectionStartFromPointer(options.e));
   },
 
@@ -28083,6 +28058,9 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
    * Default handler for triple click, select a line
    */
   tripleClickHandler: function(options) {
+    if (!this.isEditing) {
+      return;
+    }
     this.selectLine(this.getSelectionStartFromPointer(options.e));
   },
 
